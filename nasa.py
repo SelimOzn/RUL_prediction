@@ -230,14 +230,13 @@ def lstm_train(seq_array, label_array, sequence_length):
     model.add(Dense(units=nb_output, activation="linear"))
 
     # AdamW optimizer ve ReduceLROnPlateau kullan
-    optimizer = AdamW(learning_rate=0.001)
-    model.compile(loss='mean_squared_error', optimizer=optimizer, metrics=["mae", r2_keras])
+    model.compile(loss='mean_squared_error', optimizer="rmsprop", metrics=["mae", r2_keras])
 
     # Öğrenme hızı zamanla düşsün
     lr_schedule = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-5)
 
     # Modeli eğit
-    history = model.fit(seq_array, label_array, epochs=60, batch_size=64, validation_split=0.05, verbose=2,
+    history = model.fit(seq_array, label_array, epochs=60, batch_size=200, validation_split=0.05, verbose=2,
                         callbacks=[lr_schedule])
     print(history.history.keys())
 
@@ -902,101 +901,5 @@ print(f"Ensemble Model for all test MAE: {mae}, RMSE: {rmse}, R2 Score: {r2}")
 print(r2_score(y_true_test, xgb_pred_for_all))
 print(r2_score(y_true_test, transformer_pred_for_all))
 print(r2_score(y_true_test, y_pred_test))
-
-
-
-
-
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-
-
-class TransformerRUL(nn.Module):
-    def __init__(self, input_dim, d_model, nhead, num_layers, dropout=0.1):
-        super(TransformerRUL, self).__init__()
-
-        self.input_projection = nn.Linear(input_dim, d_model)  # Sensör verisini dönüştür
-        self.positional_encoding = nn.Parameter(torch.randn(1, 100, d_model))  # Sabit pozisyonel kodlama
-
-        # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-        # Tam bağlı katman (son tahmin)
-        self.fc = nn.Linear(d_model, 1)
-
-    def forward(self, x):
-        x = self.input_projection(x)  # Sensör verisini dönüştür
-        x = x + self.positional_encoding[:, :x.size(1), :]  # Pozisyonel kodlama ekle
-        x = self.transformer_encoder(x)  # Transformer encoder'a gönder
-        x = x.mean(dim=1)  # Global Average Pooling (ortalama çıkış)
-        return self.fc(x)  # RUL tahmini yap
-
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from torch.utils.data import Dataset, DataLoader
-
-# CMAPSS veri setini yükleme
-
-X_sequences, y_sequences = seq_array.copy(), label_array.copy()
-
-
-class RULDataset(Dataset):
-    def __init__(self, X, y):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-
-
-# Veri kümesi oluştur
-dataset = RULDataset(X_sequences, y_sequences)
-train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-# Modeli oluştur
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = TransformerRUL(input_dim=X_sequences.shape[2], d_model=128, nhead=8, num_layers=4).to(device)
-
-# Kayıp fonksiyonu ve optimizer
-criterion = nn.MSELoss()  # RUL tahmini regresyon problemidir
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# Modeli eğitme
-num_epochs = 30
-for epoch in range(num_epochs):
-    model.train()
-    total_loss = 0
-    for X_batch, y_batch in train_loader:
-        X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-
-        optimizer.zero_grad()
-        predictions = model(X_batch)
-        y_batch = y_batch.squeeze(-1)
-        loss = criterion(predictions, y_batch)
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-
-    print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(train_loader):.4f}")
-
-model.eval()
-X_test_tensor = torch.tensor(X_sequences[-100:], dtype=torch.float32).to(device)
-y_test_tensor = torch.tensor(y_sequences[-100:], dtype=torch.float32).to(device).squeeze(-1)
-
-with torch.no_grad():
-    y_pred = model(X_test_tensor).cpu().numpy()
-
-# Performans metriği
-from sklearn.metrics import mean_absolute_error
-mae = mean_absolute_error(y_sequences[-100:], y_pred)
-print(f"Test MAE: {mae:.4f}")
 
 
